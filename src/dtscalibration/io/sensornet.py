@@ -12,6 +12,11 @@ from dtscalibration.io.utils import dim_attrs
 from dtscalibration.io.utils import open_file
 
 
+def _is_file_like(obj):
+    """Check if object is file-like (has read method)."""
+    return hasattr(obj, "read") and callable(obj.read)
+
+
 def read_sensornet_files(
     filepathlist=None,
     directory=None,
@@ -29,8 +34,9 @@ def read_sensornet_files(
 
     Parameters
     ----------
-    filepathlist : list of str, optional
-        List of paths that point the the silixa files
+    filepathlist : list of str or list of file-like objects, optional
+        List of paths that point to the sensornet files, or list of open
+        file objects/buffers. Can mix both types.
     directory : str, Path, optional
         Path to folder
     timezone_input_files : str, optional
@@ -138,14 +144,14 @@ def sensornet_ddf_version_check(filepathlist):
 
     Parameters
     ----------
-    filepathlist
+    filepathlist : list of str or file-like objects
 
     Returns:
     --------
     ddf_version
 
     """
-    # Obtain metadata fro mthe first file
+    # Obtain metadata from the first file
     _, meta = read_sensornet_single(filepathlist[0])
 
     if "Software version number" in meta:
@@ -161,77 +167,116 @@ def sensornet_ddf_version_check(filepathlist):
     return ddf_version
 
 
-def read_sensornet_single(filename):
-    """Parameters
+def read_sensornet_single(filename_or_filelike):
+    """Read a single Sensornet file.
+
+    Parameters
     ----------
-    filename
+    filename_or_filelike : str, Path, or file-like object
+        Path to file or an open file object/buffer
 
     Returns:
     --------
-
+    data : dict
+        Dictionary containing measurement data
+    meta : dict
+        Dictionary containing metadata
     """
     headerlength = 26
 
-    # The $\circ$ Celsius symbol is unreadable in utf8
-    with open_file(filename, encoding="windows-1252") as fileobject:
-        filelength = sum([1 for _ in fileobject])
+    # Check if input is file-like object or filename
+    if _is_file_like(filename_or_filelike):
+        # It's already a file-like object
+        filename_or_filelike.seek(0)
+        return _read_from_fileobject(filename_or_filelike, headerlength)
+    else:
+        # It's a filename, open it
+        # The $\circ$ Celsius symbol is unreadable in utf8
+        with open_file(filename_or_filelike, encoding="windows-1252") as fileobject:
+            return _read_from_fileobject(fileobject, headerlength)
+       
+
+
+def _read_from_fileobject(fileobject, headerlength):
+    """Internal function to read data from file object.
+
+    Parameters
+    ----------
+    fileobject : file-like object
+        Open file object to read from
+    headerlength : int
+        Number of header lines
+
+    Returns:
+    --------
+    data : dict
+        Dictionary containing measurement data
+    meta : dict
+        Dictionary containing metadata
+    """
+    
+    fileobject.seek(0)
+    filelength = sum([1 for _ in fileobject])
     datalength = filelength - headerlength
+    fileobject.seek(0)
 
     meta = {}
-    with open_file(filename, encoding="windows-1252") as fileobject:
-        for ii in range(0, 4):
-            fileline = fileobject.readline().split(":\t")
-            meta[fileline[0]] = fileline[1].replace("\n", "")
 
-        for ii in range(4, headerlength - 1):
-            fileline = fileobject.readline().split("\t")
-            meta[fileline[0]] = fileline[1].replace("\n", "").replace(",", ".")
+    # Read metadata
+    for ii in range(0, 4):
+        fileline = fileobject.readline().split(":\t")
+        meta[fileline[0]] = fileline[1].replace("\n", "")
 
-        # data_names =
-        fileobject.readline().split("\t")
+    for ii in range(4, headerlength - 1):
+        fileline = fileobject.readline().split("\t")
+        meta[fileline[0]] = fileline[1].replace("\n", "").replace(",", ".")
 
-        if meta["differential loss correction"] == "single-ended":
-            data = {
-                "x": np.zeros(datalength),
-                "tmp": np.zeros(datalength),
-                "st": np.zeros(datalength),
-                "ast": np.zeros(datalength),
-            }
+    # data_names =
+    fileobject.readline().split("\t")
 
-            for ii in range(0, datalength):
-                fileline = fileobject.readline().replace(",", ".").split("\t")
+    # Read measurement data based on mode
+    if meta["differential loss correction"] == "single-ended":
+        data = {
+            "x": np.zeros(datalength),
+            "tmp": np.zeros(datalength),
+            "st": np.zeros(datalength),
+            "ast": np.zeros(datalength),
+        }
 
-                data["x"][ii] = float(fileline[0])
-                data["tmp"][ii] = float(fileline[1])
-                data["st"][ii] = float(fileline[2])
-                data["ast"][ii] = float(fileline[3])
+        for ii in range(0, datalength):
+            fileline = fileobject.readline().replace(",", ".").split("\t")
 
-        elif meta["differential loss correction"] == "combined":
-            data = {
-                "x": np.zeros(datalength),
-                "tmp": np.zeros(datalength),
-                "st": np.zeros(datalength),
-                "ast": np.zeros(datalength),
-                "rst": np.zeros(datalength),
-                "rast": np.zeros(datalength),
-            }
+            data["x"][ii] = float(fileline[0])
+            data["tmp"][ii] = float(fileline[1])
+            data["st"][ii] = float(fileline[2])
+            data["ast"][ii] = float(fileline[3])
 
-            for ii in range(0, datalength):
-                fileline = fileobject.readline().replace(",", ".").split("\t")
+    elif meta["differential loss correction"] == "combined":
+        data = {
+            "x": np.zeros(datalength),
+            "tmp": np.zeros(datalength),
+            "st": np.zeros(datalength),
+            "ast": np.zeros(datalength),
+            "rst": np.zeros(datalength),
+            "rast": np.zeros(datalength),
+        }
 
-                data["x"][ii] = float(fileline[0])
-                data["tmp"][ii] = float(fileline[1])
-                data["st"][ii] = float(fileline[2])
-                data["ast"][ii] = float(fileline[3])
-                data["rst"][ii] = float(fileline[4])
-                data["rast"][ii] = float(fileline[5])
+        for ii in range(0, datalength):
+            fileline = fileobject.readline().replace(",", ".").split("\t")
 
-        else:
-            raise ValueError(
-                'unknown differential loss correction: "'
-                + meta["differential loss correction"]
-                + '"'
-            )
+            data["x"][ii] = float(fileline[0])
+            data["tmp"][ii] = float(fileline[1])
+            data["st"][ii] = float(fileline[2])
+            data["ast"][ii] = float(fileline[3])
+            data["rst"][ii] = float(fileline[4])
+            data["rast"][ii] = float(fileline[5])
+
+    else:
+        raise ValueError(
+            'unknown differential loss correction: "'
+            + meta["differential loss correction"]
+            + '"'
+        )
 
     meta["default loss term dB per km"] = meta["default loss term (dB/km)"]
     del meta["default loss term (dB/km)"]
@@ -367,9 +412,9 @@ def read_sensornet_files_routine_v3(
             REV_AST[:, ii] = data["rast"]
 
     if fiber_length is None and double_ended_flag:
-        fiber_length = np.max([0.0, xraw[-1] - add_internal_fiber_length])
+        fiber_length = np.max([0.0, xraw[-1] - xraw[0] - add_internal_fiber_length])
     elif fiber_length is None and not double_ended_flag:
-        fiber_length = xraw[-1]
+        fiber_length = xraw[-1] - xraw[0]
     else:
         pass
 
@@ -502,7 +547,10 @@ def read_sensornet_files_routine_v3(
         data_vars["rst"] = (["x", "time"], REV_ST, dim_attrs["rst"])
         data_vars["rast"] = (["x", "time"], REV_AST, dim_attrs["rast"])
 
-    filenamelist = [os.path.split(f)[-1] for f in filepathlist]
+    filenamelist = [
+        os.path.split(f)[-1] if not _is_file_like(f) else f"fileobj_{i}"
+        for i, f in enumerate(filepathlist)
+    ]
 
     coords = {"x": ("x", x, dim_attrs["x"]), "filename": ("time", filenamelist)}
 
